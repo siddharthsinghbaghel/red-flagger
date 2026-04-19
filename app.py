@@ -30,9 +30,13 @@ if uploaded_file and process_button:
         loader = PyPDFLoader(temp_path)
         data = loader.load()
         
+        # Save the full text for the overarching Risk Score calculation
+        st.session_state.full_text = "\n".join([doc.page_content for doc in data])
+        
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
         chunks = text_splitter.split_documents(data)
         
+        # Using the latest embedding model to prevent 404 errors
         embeddings = GoogleGenerativeAIEmbeddings(
             model="gemini-embedding-001",
             google_api_key=GEMINI_API_KEY
@@ -54,13 +58,50 @@ if uploaded_file and process_button:
 if "retriever" in st.session_state:
     st.divider()
     
-    # --- NEW FEATURE: QUICK AUDITS ---
+    # --- FEATURE 3: RISK SCORE DASHBOARD ---
+    st.markdown("### 📊 Contract Risk Dashboard")
+    if st.button("Calculate Overall Risk Score"):
+        with st.spinner("Analyzing full contract liabilities..."):
+            risk_prompt = f"""
+            Act as a senior legal risk analyst. Read the following contract and assign a quantitative 'Risk Score' from 1 to 100.
+            1 = Perfectly safe, standard terms.
+            100 = Highly dangerous, predatory, or illegal terms.
+            
+            Respond strictly in this exact format, nothing else:
+            SCORE: [Number]
+            REASON: [One sentence explaining the score]
+            
+            CONTRACT TEXT:
+            {st.session_state.full_text[:50000]} 
+            """
+            
+            try:
+                score_response = st.session_state.llm.invoke(risk_prompt).content
+                score_str = score_response.split("SCORE:")[1].split("\n")[0].strip()
+                reason = score_response.split("REASON:")[1].strip()
+                score = int(score_str)
+                
+                if score < 40:
+                    status = "🟢 Low Risk"
+                elif score < 75:
+                    status = "🟡 Medium Risk"
+                else:
+                    status = "🔴 HIGH RISK"
+                
+                st.metric(label=f"Risk Assessment: {status}", value=f"{score}/100")
+                st.progress(score / 100.0)
+                st.warning(f"**Analyst Note:** {reason}")
+                
+            except Exception as e:
+                st.error("Could not calculate risk score. Ensure the document contains readable text.")
+    
+    st.divider()
+
+    # --- QUICK AUDITS ---
     st.markdown("### ⚡ Quick Audits")
     col1, col2, col3 = st.columns(3)
     
-    # Variables to track what the user wants to ask
     button_query = None
-    
     if col1.button("💰 Financial Liabilities"):
         button_query = "Identify any hidden fees, unexpected costs, or financial liabilities in this contract."
     if col2.button("📅 Termination Rules"):
@@ -69,9 +110,9 @@ if "retriever" in st.session_state:
         button_query = "Are there any clauses related to data sharing, privacy risks, or Intellectual Property ownership?"
         
     st.markdown("### 💬 Or ask a custom question")
-    user_input = st.text_input("Type your specific query here:")
+    # Using chat_input to prevent Streamlit SSL network disconnects
+    user_input = st.chat_input("Type your specific query here...")
     
-    # Determine which query to run (either the button clicked OR the text typed)
     final_query = button_query or user_input
     
     if final_query:
@@ -103,6 +144,6 @@ if "retriever" in st.session_state:
             response = st.session_state.llm.invoke(prompt)
             
             st.markdown("#### Auditor's Finding:")
-            st.info(f"**Query:** {final_query}") # Shows the user what question was actually asked
+            st.info(f"**Query:** {final_query}") 
             st.write(response.content)
             st.caption(f"🔍 **Sources checked by AI:** {', '.join(unique_citations)}")
