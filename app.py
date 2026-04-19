@@ -53,16 +53,34 @@ if uploaded_file and process_button:
 # Retrieval and Generation Pipeline
 if "retriever" in st.session_state:
     st.divider()
-    user_input = st.text_input("Ask a specific question (e.g., 'What are the termination rules?'):")
     
-    if user_input:
+    # --- NEW FEATURE: QUICK AUDITS ---
+    st.markdown("### ⚡ Quick Audits")
+    col1, col2, col3 = st.columns(3)
+    
+    # Variables to track what the user wants to ask
+    button_query = None
+    
+    if col1.button("💰 Financial Liabilities"):
+        button_query = "Identify any hidden fees, unexpected costs, or financial liabilities in this contract."
+    if col2.button("📅 Termination Rules"):
+        button_query = "What are the exact rules, notice periods, and penalties for terminating this agreement?"
+    if col3.button("🔒 Data & IP Risks"):
+        button_query = "Are there any clauses related to data sharing, privacy risks, or Intellectual Property ownership?"
+        
+    st.markdown("### 💬 Or ask a custom question")
+    user_input = st.text_input("Type your specific query here:")
+    
+    # Determine which query to run (either the button clicked OR the text typed)
+    final_query = button_query or user_input
+    
+    if final_query:
         with st.spinner("Scanning document..."):
-            docs = st.session_state.retriever.invoke(user_input)
+            docs = st.session_state.retriever.invoke(final_query)
             
             context = ""
             citations = []
             
-            # Extract content and metadata for citation tracking
             for doc in docs:
                 page_num = doc.metadata.get("page", 0) + 1
                 context += f"\n--- Excerpt from Page {page_num} ---\n{doc.page_content}\n"
@@ -79,11 +97,12 @@ if "retriever" in st.session_state:
             {context}
             
             USER QUESTION:
-            {user_input}
+            {final_query}
             """
             
             response = st.session_state.llm.invoke(prompt)
             
             st.markdown("#### Auditor's Finding:")
+            st.info(f"**Query:** {final_query}") # Shows the user what question was actually asked
             st.write(response.content)
             st.caption(f"🔍 **Sources checked by AI:** {', '.join(unique_citations)}")
