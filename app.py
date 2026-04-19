@@ -1,11 +1,10 @@
 import streamlit as st
 import os
+from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
-from dotenv import load_dotenv
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Legal Auditor AI", layout="centered")
@@ -32,45 +31,57 @@ if uploaded_file and process_button:
         loader = PyPDFLoader("temp_contract.pdf")
         data = loader.load()
         
-        # 3. Chunking (Splitting text into searchable pieces)
-        # This is the "Data Science" part: We split by 1000 characters 
-        # so we don't exceed the AI's memory limit.
+        # 3. Chunking
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
         chunks = text_splitter.split_documents(data)
         
-        # 4. Create the Vector Brain (Embeddings + FAISS)
+        # 4. Create the Vector Brain
         embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001", 
+            model="gemini-embedding-001", 
             google_api_key=GEMINI_API_KEY
         )
         vector_db = FAISS.from_documents(chunks, embeddings)
         
-        # 5. Setup the AI "Expert"
+        # 5. Setup the AI Model
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash", # Faster and great for RAG
+            model="gemini-2.0-flash",
             google_api_key=GEMINI_API_KEY, 
-            temperature=0 # Zero means no "imagination", stay factual!
+            temperature=0
         )
         
-        # Create the RAG retrieval chain
-        st.session_state.qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vector_db.as_retriever(),
-        )
+        # Save the active retriever and model to session state
+        st.session_state.retriever = vector_db.as_retriever(search_kwargs={"k": 3})
+        st.session_state.llm = llm
+        
         st.success("Contract Analysis Ready!")
 
 # --- CHAT / ANALYSIS INTERFACE ---
-if "qa_chain" in st.session_state:
+if "retriever" in st.session_state:
     st.divider()
-    user_input = st.text_input("Ask a specific question (e.g., 'What are the termination rules?' or 'List any hidden fees'):")
+    user_input = st.text_input("Ask a specific question (e.g., 'What are the termination rules?'):")
     
     if user_input:
         with st.spinner("Scanning document..."):
-            # Customizing the query to force a "Red Flag" persona
-            response = st.session_state.qa_chain.invoke(
-                f"Act as a strict legal auditor. Answer this question based ONLY on the provided document: {user_input}. "
-                "If you find a clause that seems unfair or risky, start your answer with '🚩 RED FLAG:'"
-            )
+            
+            # Step A: RETRIEVAL (Find the 3 most relevant paragraphs)
+            docs = st.session_state.retriever.invoke(user_input)
+            context = "\n\n".join([doc.page_content for doc in docs])
+            
+            # Step B: AUGMENTATION (Inject the paragraphs into a prompt)
+            prompt = f"""
+            Act as a strict legal auditor. Answer this question based ONLY on the provided document context. 
+            If you find a clause that seems unfair or risky, start your answer with '🚩 RED FLAG:'
+            
+            CONTEXT FROM CONTRACT:
+            {context}
+            
+            USER QUESTION:
+            {user_input}
+            """
+            
+            # Step C: GENERATION (Let Gemini analyze it)
+            response = st.session_state.llm.invoke(prompt)
+            
             st.markdown("#### Auditor's Finding:")
-            st.write(response["result"])
+            # We use .content to get the text out of the modern ChatModel object
+            st.write(response.content)
