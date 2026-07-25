@@ -10,6 +10,12 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
 
+st.write("API Key Loaded:", GEMINI_API_KEY is not None)
+
+if not GEMINI_API_KEY:
+    st.error("GOOGLE_API_KEY is missing!")
+    st.stop()
+
 # Configure Streamlit UI
 st.set_page_config(page_title="Legal Auditor AI", layout="centered")
 st.title("⚖️ Legal Contract Red-Flagger")
@@ -44,10 +50,9 @@ if uploaded_file and process_button:
         vector_db = FAISS.from_documents(chunks, embeddings)
         
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
-            google_api_key=GEMINI_API_KEY, 
-            temperature=0
-        )
+    model="gemini-3.6-flash",
+    google_api_key=GEMINI_API_KEY,
+)
         
         st.session_state.retriever = vector_db.as_retriever(search_kwargs={"k": 3})
         st.session_state.llm = llm
@@ -62,40 +67,70 @@ if "retriever" in st.session_state:
     st.markdown("### 📊 Contract Risk Dashboard")
     if st.button("Calculate Overall Risk Score"):
         with st.spinner("Analyzing full contract liabilities..."):
+
             risk_prompt = f"""
-            Act as a senior legal risk analyst. Read the following contract and assign a quantitative 'Risk Score' from 1 to 100.
-            1 = Perfectly safe, standard terms.
-            100 = Highly dangerous, predatory, or illegal terms.
-            
-            Respond strictly in this exact format, nothing else:
-            SCORE: [Number]
-            REASON: [One sentence explaining the score]
-            
-            CONTRACT TEXT:
-            {st.session_state.full_text[:50000]} 
-            """
-            
-            try:
-                score_response = st.session_state.llm.invoke(risk_prompt).content
-                score_str = score_response.split("SCORE:")[1].split("\n")[0].strip()
-                reason = score_response.split("REASON:")[1].strip()
-                score = int(score_str)
-                
-                if score < 40:
-                    status = "🟢 Low Risk"
-                elif score < 75:
-                    status = "🟡 Medium Risk"
-                else:
-                    status = "🔴 HIGH RISK"
-                
-                st.metric(label=f"Risk Assessment: {status}", value=f"{score}/100")
-                st.progress(score / 100.0)
-                st.warning(f"**Analyst Note:** {reason}")
-                
-            except Exception as e:
-                st.error("Could not calculate risk score. Ensure the document contains readable text.")
-    
-    st.divider()
+    You are a senior legal risk analyst.
+
+    Read the contract and assign a Risk Score from 1 to 100.
+
+    1 = Very Safe
+    100 = Extremely Risky
+
+    Respond EXACTLY like this:
+
+    SCORE: 45
+    REASON: Short explanation.
+
+    CONTRACT:
+    {st.session_state.full_text[:50000]}
+    """
+
+        try:
+            response = st.session_state.llm.invoke(risk_prompt)
+
+            # Extract text from Gemini response
+            response_data = response.model_dump()
+
+            risk_text = ""
+            for item in response_data["content"]:
+                if item.get("type") == "text":
+                    risk_text += item["text"]
+
+            st.write("Gemini Response:")
+            st.code(risk_text)
+
+            score = None
+            reason = ""
+
+            for line in risk_text.splitlines():
+                if line.upper().startswith("SCORE:"):
+                    score = int(line.split(":")[1].strip())
+
+                elif line.upper().startswith("REASON:"):
+                    reason = line.split(":", 1)[1].strip()
+
+            if score is None:
+                st.error("Could not extract score from Gemini response.")
+                st.stop()
+
+            if score < 40:
+                status = "🟢 Low Risk"
+            elif score < 75:
+                status = "🟡 Medium Risk"
+            else:
+                status = "🔴 HIGH RISK"
+
+            st.metric(
+                label=f"Risk Assessment: {status}",
+                value=f"{score}/100"
+            )
+
+            st.progress(score / 100)
+
+            st.warning(f"**Analyst Note:** {reason}")
+
+        except Exception as e:
+            st.error(e)
 
     # --- QUICK AUDITS ---
     st.markdown("### ⚡ Quick Audits")
@@ -114,36 +149,48 @@ if "retriever" in st.session_state:
     user_input = st.chat_input("Type your specific query here...")
     
     final_query = button_query or user_input
-    
     if final_query:
         with st.spinner("Scanning document..."):
             docs = st.session_state.retriever.invoke(final_query)
-            
+
             context = ""
             citations = []
-            
+
             for doc in docs:
                 page_num = doc.metadata.get("page", 0) + 1
                 context += f"\n--- Excerpt from Page {page_num} ---\n{doc.page_content}\n"
                 citations.append(f"Page {page_num}")
-            
+
             unique_citations = list(set(citations))
-            
+
             prompt = f"""
-            Act as a strict legal auditor. Answer this question based ONLY on the provided document context. 
+            Act as a strict legal auditor. Answer this question based ONLY on the provided document context.
             If you find a clause that seems unfair or risky, start your answer with '🚩 RED FLAG:'
             Always mention which page your finding comes from.
-            
+
             CONTEXT FROM CONTRACT:
             {context}
-            
+
             USER QUESTION:
             {final_query}
             """
-            
+
             response = st.session_state.llm.invoke(prompt)
-            
+
             st.markdown("#### Auditor's Finding:")
-            st.info(f"**Query:** {final_query}") 
-            st.write(response.content)
+            st.info(f"**Query:** {final_query}")
+
+            if isinstance(response.content, list):
+                answer = ""
+                for item in response.content:
+                    if isinstance(item, dict):
+                        answer += item.get("text", "")
+                    elif hasattr(item, "text"):
+                        answer += item.text
+
+                st.write(answer)
+
+            else:
+                st.write(response.content)
+
             st.caption(f"🔍 **Sources checked by AI:** {', '.join(unique_citations)}")
